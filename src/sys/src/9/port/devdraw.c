@@ -239,40 +239,43 @@ drawgen(Chan *c, char*, Dirtab*, int, int s, Dir *dp)
 	 * Top level directory contains the name of the device.
 	 */
 	t = QID(c->qid);
-	if(t == Qtopdir || t == Qwinname){
-		if(s == 1 || t == Qwinname){
-			mkqid(&q, Qwinname, 0, QTFILE);
-			devdir(c, q, "winname", 0, eve, 0444, dp);
-		}
-		else if(s == 0){
+	switch(t){
+	case Qtopdir:
+		if(s == 0){
 			mkqid(&q, Q2nd, 0, QTDIR);
 			devdir(c, q, "draw", 0, eve, 0555, dp);
+			return 1;
 		}
-		else
-			return -1;
-		return 1;
+		if(s == 1){
+	case Qwinname:
+			mkqid(&q, Qwinname, 0, QTFILE);
+			devdir(c, q, "winname", 0, eve, 0444, dp);
+			return 1;
+		}
+		return -1;
 	}
 
 	/*
 	 * Second level contains "new" plus all the clients.
 	 */
-	if(t == Q2nd || t == Qnew){
+	switch(t){
+	case Q2nd:
 		if(s == 0){
+	case Qnew:
 			mkqid(&q, Qnew, 0, QTFILE);
 			devdir(c, q, "new", 0, eve, 0666, dp);
+			return 1;
 		}
-		else if(s <= sdraw.nclient){
+		if(s <= sdraw.nclient){
 			cl = sdraw.client[s-1];
-			if(cl == 0)
+			if(cl == nil)
 				return 0;
 			sprint(up->genbuf, "%d", cl->clientid);
 			mkqid(&q, (s<<QSHIFT)|Q3rd, 0, QTDIR);
 			devdir(c, q, up->genbuf, 0, eve, 0555, dp);
 			return 1;
 		}
-		else
-			return -1;
-		return 1;
+		return -1;
 	}
 
 	/*
@@ -915,33 +918,14 @@ makescreenimage(void)
 	Memdata *md;
 	Memimage *i;
 	Rectangle r;
-	uchar *data;
 
-	if((data = attachscreen(&r, &chan, &depth, &width, &sdraw.softscreen)) == nil)
+	if((md = attachscreen(&r, &chan, &depth, &width, &sdraw.softscreen)) == nil)
 		return nil;
-	if(sdraw.softscreen == 0xa110c){
-		/* hack: softscreen is memimage. */
-		md = *((Memdata**)(data - sizeof(ulong) - sizeof(Memdata*)));
-
-		assert(md->bdata == data);
-		assert(md->ref > 1);
-		assert(md->allocd);
-
-		if((i = allocmemimaged(r, chan, md)) == nil){
-			md->ref--;
-			return nil;
-		}
-	}else{
-		if((md = malloc(sizeof *md)) == nil)
-			return nil;
-		md->allocd = 1;
-		md->base = nil;
-		md->bdata = data;
-		md->ref = 1;
-		if((i = allocmemimaged(r, chan, md)) == nil){
+	assert(md->ref > 0);
+	if((i = allocmemimaged(r, chan, md)) == nil){
+		if(--md->ref == 0 && md->allocd)
 			free(md);
-			return nil;
-		}
+		return nil;
 	}
 	i->width = width;
 	i->clipr = r;

@@ -99,7 +99,7 @@ char *optname[256] =
 [OBbflen]		"bflen",
 [OBdumpfile]		"dumpfile",
 [OBdomainname]		"dom",
-[OBswapserver]		"swap",
+[OBrootserver]		"rootserver",
 [OBrootpath]		"rootpath",
 [OBextpath]		"extpath",
 [OBipforward]		"ipforward",
@@ -402,7 +402,7 @@ proto(Req *rp, int n)
 
 	/* info about target system */
 	if(lookup(rp->bp, &rp->ii, &rp->gii) == 0)
-		if(rp->ii.indb && rp->ii.dhcpgroup[0] == 0)
+		if(rp->ii.indb)
 			rp->staticbinding = 1;
 
 	if(rp->dhcptype)
@@ -1186,8 +1186,8 @@ miscoptions(Req *rp, uchar *ip)
 		case OBnetbiosns:
 			a[na++] = "@wins";
 			break;
-		case OBswapserver:
-			a[na++] = "@swap";
+		case OBrootserver:
+			a[na++] = "@rootserver";
 			break;
 		case OBsmtpserver:
 			a[na++] = "@smtp";
@@ -1259,9 +1259,9 @@ miscoptions(Req *rp, uchar *ip)
 			j = lookupserver("www", addrs, nelem(addrs), t);
 			addrsopt(rp, OBwwwserver, addrs, j);
 			break;
-		case OBswapserver:
-			j = lookupserver("swap", addrs, nelem(addrs), t);
-			addrsopt(rp, OBswapserver, addrs, j);
+		case OBrootserver:
+			j = lookupserver("rootserver", addrs, nelem(addrs), t);
+			addrsopt(rp, OBrootserver, addrs, j);
 			break;
 		case OBntpserver:
 			j = lookupserver("ntp", addrs, nelem(addrs), t);
@@ -1276,9 +1276,7 @@ miscoptions(Req *rp, uchar *ip)
 			break;
 		}
 
-	/* add plan9 specific options */
-	if(strncmp((char*)rp->vendorclass, "plan9_", 6) == 0
-	|| strncmp((char*)rp->vendorclass, "p9-", 3) == 0){
+	if (*rp->vendorclass != '\0') {
 		/* point to temporary area */
 		op = rp->p;
 		omax = rp->max;
@@ -1286,15 +1284,22 @@ miscoptions(Req *rp, uchar *ip)
 		rp->p = vopts;
 		rp->max = vopts + sizeof(vopts) - 1;
 
-		/* emit old v4 addresses first to make sure that they fit */
-		addrsopt(rp, OP9fsv4, addrs, lookupserver("fs", addrs, nelem(addrs), t));
-		addrsopt(rp, OP9authv4, addrs, lookupserver("auth", addrs, nelem(addrs), t));
+		if (*rp->ii.vendor != '\0')
+			stringopt(rp, OBvendorinfo, rp->ii.vendor);
 
-		p9addrsopt(rp, OP9fs, addrs, lookupserver("fs", addrs, nelem(addrs), t));
-		p9addrsopt(rp, OP9auth, addrs, lookupserver("auth", addrs, nelem(addrs), t));
-		p9addrsopt(rp, OP9ipaddr, addrs, lookupserver("ip", addrs, nelem(addrs), t));
-		p9addrsopt(rp, OP9ipmask, addrs, lookupserver("ipmask", addrs, nelem(addrs), t));
-		p9addrsopt(rp, OP9ipgw, addrs, lookupserver("ipgw", addrs, nelem(addrs), t));
+		/* add plan9 specific options */
+		if (strncmp((char*)rp->vendorclass, "p9-", 3) == 0
+		||  strncmp((char*)rp->vendorclass, "plan9_", 6) == 0){
+			/* emit old v4 addresses first to make sure that they fit */
+			addrsopt(rp, OP9fsv4, addrs, lookupserver("fs", addrs, nelem(addrs), t));
+			addrsopt(rp, OP9authv4, addrs, lookupserver("auth", addrs, nelem(addrs), t));
+
+			p9addrsopt(rp, OP9fs, addrs, lookupserver("fs", addrs, nelem(addrs), t));
+			p9addrsopt(rp, OP9auth, addrs, lookupserver("auth", addrs, nelem(addrs), t));
+			p9addrsopt(rp, OP9ipaddr, addrs, lookupserver("ip", addrs, nelem(addrs), t));
+			p9addrsopt(rp, OP9ipmask, addrs, lookupserver("ipmask", addrs, nelem(addrs), t));
+			p9addrsopt(rp, OP9ipgw, addrs, lookupserver("ipgw", addrs, nelem(addrs), t));
+		}
 
 		/* point back to packet, encapsulate vopts into packet */
 		j = rp->p - vopts;
