@@ -1013,7 +1013,7 @@ createv4ptrs(void)
 {
 	int len, dlen, n;
 	char *dom;
-	char buf[Domlen], ipa[48];
+	char buf[Domlen], ipa[64];
 	char *f[40];
 	uchar net[IPaddrlen], mask[IPaddrlen];
 	Area *s;
@@ -1057,16 +1057,15 @@ createv4ptrs(void)
 			net[IPv4off+1] = atoi(f[2]);
 			net[IPv4off+2] = atoi(f[1]);
 			net[IPv4off+3] = atoi(f[0]);
-			sprint(ipa, "%I", net);
+			snprint(ipa, sizeof(ipa), "%I", net);
 			t = ndbipinfo(db, "ip", ipa, attribs, 1);
 			if(t == nil)	/* could be a reverse with no forward */
 				continue;
 			nt = look(t, t, "ipmask");
-			if(nt == nil){		/* we're confused */
+			if(nt == nil || parseipmask(mask, nt->val, 1) == -1){
 				ndbfree(t);
 				continue;
 			}
-			parseipmask(mask, nt->val);
 			ndbfree(t);
 			n = 5;
 			break;
