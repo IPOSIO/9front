@@ -80,8 +80,8 @@ int nsid;
 uchar sid[256];
 char thumb[2*SHA2_256dlen+1], *thumbfile;
 
-int fd, intr, raw, debug;
-char *user, *service, *status, *host, *cmd;
+int fd, intr, raw, port, mux, debug;
+char *user, *service, *status, *host, *remote, *cmd;
 
 Oneway recv, send;
 void dispatch(void);
@@ -987,6 +987,19 @@ dispatch(void)
 			break;
 		if(raw) write(2, s, n);
 		return;
+	case MSG_KEXINIT:
+		kex(1);
+		return;
+	}
+
+	if(mux){
+		n = recv.w - recv.r;
+		if(write(1, recv.r, n) != n)
+			sysfatal("write out: %r");
+		return;
+	}
+
+	switch(recv.r[0]){
 	case MSG_CHANNEL_DATA:
 		if(unpack(recv.r, recv.w-recv.r, "_us", &c, &s, &n) < 0)
 			break;
@@ -1050,9 +1063,6 @@ dispatch(void)
 		return;
 	case MSG_CHANNEL_CLOSE:
 		shutdown();
-		return;
-	case MSG_KEXINIT:
-		kex(1);
 		return;
 	}
 	sysfatal("got: %.*H", (int)(recv.w - recv.r), recv.r);
@@ -1147,7 +1157,7 @@ kfmt(Fmt *f)
 void
 usage(void)
 {
-	fprint(2, "usage: %s [-dR] [-t thumbfile] [-T tries] [-u user] [-h] [user@]host [cmd args...]\n", argv0);
+	fprint(2, "usage: %s [-dR] [-t thumbfile] [-T tries] [-u user] [-h] [user@]host [-W remote!port] [cmd args...]\n", argv0);
 	exits("usage");
 }
 
@@ -1173,6 +1183,17 @@ main(int argc, char *argv[])
 	case 'd':
 		debug++;
 		break;
+	case 'W':
+		remote = EARGF(usage());
+		s = strrchr(remote, '!');
+		if(s == nil)
+			s = strrchr(remote, ':');
+		if(s == nil)
+			usage();
+		*s++ = 0;
+		port = atoi(s);
+		raw = 0;
+		break;
 	case 'R':
 		raw = 0;
 		break;
@@ -1192,6 +1213,12 @@ main(int argc, char *argv[])
 		MaxPwTries = strtol(EARGF(usage()), &s, 0);
 		if(*s != 0) usage();
 		break;
+	case 'X':
+		mux = 1;
+		raw = 0;
+		break;
+	default:
+		usage();
 	} ARGEND;
 
 	if(host == nil){
@@ -1220,6 +1247,9 @@ main(int argc, char *argv[])
 			cmd = s;
 		}
 	}
+
+	if(remote != nil && cmd != nil)
+		usage();
 
 	if((fd = dial(netmkaddr(host, nil, "ssh"), nil, nil, nil)) < 0)
 		sysfatal("dial: %r");
@@ -1255,17 +1285,35 @@ Next0:	switch(recvpkt()){
 	if(noneauth() < 0 && pubkeyauth() < 0 && passauth() < 0 && kbintauth() < 0)
 		sysfatal("auth: %r");
 
-	recv.pkt = MaxPacket;
-	recv.win = WinPackets*recv.pkt;
-	recv.chan = 0;
+	recv.pkt = send.pkt = MaxPacket;
+	recv.win = send.win =  WinPackets*recv.pkt;
+	recv.chan = send.win = 0;
+
+	if(mux)
+		goto Mux;
 
 	/* open hailing frequencies */
-	sendpkt("bsuuu", MSG_CHANNEL_OPEN,
-		"session", 7,
-		recv.chan,
-		recv.win,
-		recv.pkt);
-
+	if(remote != nil){
+		NetConnInfo *nci = getnetconninfo(nil, fd);
+		if(nci == nil)
+			sysfatal("can't get netconninfo: %r");
+		sendpkt("bsuuususu", MSG_CHANNEL_OPEN,
+			"direct-tcpip", 12,
+			recv.chan,
+			recv.win,
+			recv.pkt,
+			remote, strlen(remote),
+			port,
+			nci->laddr, strlen(nci->laddr),
+			atoi(nci->lserv));
+		free(nci);
+	} else {
+		sendpkt("bsuuu", MSG_CHANNEL_OPEN,
+			"session", 7,
+			recv.chan,
+			recv.win,
+			recv.pkt);
+	}
 Next1:	switch(recvpkt()){
 	default:
 		dispatch();
@@ -1283,30 +1331,9 @@ Next1:	switch(recvpkt()){
 	if(send.pkt <= 0 || send.pkt > MaxPacket)
 		send.pkt = MaxPacket;
 
-	notify(catch);
-	atexit(shutdown);
+	if(remote != nil)
+		goto Mux;
 
-	recv.pid = getpid();
-	n = rfork(RFPROC|RFMEM);
-	if(n < 0)
-		sysfatal("fork: %r");
-
-	/* parent reads and dispatches packets */
-	if(n > 0) {
-		send.pid = n;
-		while(recv.eof == 0){
-			recvpkt();
-			qlock(&sl);					
-			dispatch();
-			if((int)(send.kex - send.seq) <= 0 || (int)(recv.kex - recv.seq) <= 0)
-				kex(0);
-			qunlock(&sl);
-		}
-		exits(status);
-	}
-
-	/* child reads input and sends packets */
-	qlock(&sl);
 	if(raw) {
 		rawon();
 		sendpkt("busbsuuuus", MSG_CHANNEL_REQUEST,
@@ -1338,6 +1365,32 @@ Next1:	switch(recvpkt()){
 			0,
 			cmd, strlen(cmd));
 	}
+
+Mux:
+	notify(catch);
+	atexit(shutdown);
+
+	recv.pid = getpid();
+	n = rfork(RFPROC|RFMEM);
+	if(n < 0)
+		sysfatal("fork: %r");
+
+	/* parent reads and dispatches packets */
+	if(n > 0) {
+		send.pid = n;
+		while(recv.eof == 0){
+			recvpkt();
+			qlock(&sl);					
+			dispatch();
+			if((int)(send.kex - send.seq) <= 0 || (int)(recv.kex - recv.seq) <= 0)
+				kex(0);
+			qunlock(&sl);
+		}
+		exits(status);
+	}
+
+	/* child reads input and sends packets */
+	qlock(&sl);
 	for(;;){
 		static uchar buf[MaxPacket];
 		qunlock(&sl);
@@ -1368,6 +1421,10 @@ Next1:	switch(recvpkt()){
 		}
 		if(n <= 0)
 			break;
+		if(mux){
+			sendpkt("[", buf, n);
+			continue;
+		}
 		send.win -= n;
 		while(send.win < 0)
 			rsleep(&send);
@@ -1375,8 +1432,10 @@ Next1:	switch(recvpkt()){
 			send.chan,
 			buf, n);
 	}
-	if(send.eof++ == 0)
+	if(send.eof++ == 0 && !mux)
 		sendpkt("bu", raw ? MSG_CHANNEL_CLOSE : MSG_CHANNEL_EOF, send.chan);
+	else if(recv.pid > 0 && mux)
+		postnote(PNPROC, recv.pid, "shutdown");
 	qunlock(&sl);
 
 	exits(nil);
