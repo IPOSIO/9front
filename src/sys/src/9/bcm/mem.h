@@ -19,7 +19,7 @@
 #define	MACHSIZE	BY2PG
 #define L1SIZE		(4 * BY2PG)
 
-#define KSTKSIZE	(8*KiB)
+#define KSTACK		(8*KiB)
 #define STACKALIGN(sp)	((sp) & ~3)		/* bug: assure with alloc */
 
 /*
@@ -60,14 +60,11 @@
 #define	UTZERO		(UZERO+BY2PG)		/* user text start */
 #define	USTKTOP		0x40000000		/* user segment end +1 */
 #define	USTKSIZE	(8*1024*1024)		/* user stack size */
-#define	TSTKTOP		(USTKTOP-USTKSIZE)	/* sysexec temporary stack */
-#define	TSTKSIZ	 	256
 
 /*
  * Legacy...
  */
 #define BLOCKALIGN	64			/* only used in allocb.c */
-#define KSTACK		KSTKSIZE
 
 /*
  * Sizes

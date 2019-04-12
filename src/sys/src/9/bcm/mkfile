@@ -45,10 +45,12 @@ OBJ=\
 	lexception.$O\
 	lproc.$O\
 	arch.$O\
+	bootargs.$O\
 	clock.$O\
 	fpi.$O\
 	fpiarm.$O\
 	fpimem.$O\
+	irq.$O\
 	main.$O\
 	mmu.$O\
 	random.$O\

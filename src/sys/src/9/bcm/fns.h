@@ -5,6 +5,7 @@ Dirtab*	addarchfile(char*, int, long(*)(Chan*, void*, long, vlong),
 extern void archreboot(void);
 extern void archreset(void);
 extern void armtimerset(int);
+extern void bootargsinit(void);
 extern void cachedwbinv(void);
 extern void cachedwbse(void*, int);
 extern void cachedwbinvse(void*, int);
@@ -77,6 +78,7 @@ extern void procfork(Proc*);
 extern void procsetup(Proc*);
 extern void screeninit(void);
 extern void setclkrate(int, ulong);
+extern void setconfenv(void);
 extern void setpower(int, int);
 extern void setr13(int, u32int*);
 extern int startcpus(uint);
@@ -93,6 +95,7 @@ extern void vgpset(uint, int);
 extern void vtable(void);
 extern void wdogoff(void);
 extern void wdogfeed(void);
+extern void writeconf(void);
 extern void vtable(void);
 extern int l2ap(int);
 extern uint getcputemp(void);
@@ -131,14 +134,9 @@ extern void kexit(Ureg*);
 #define	kmapinval()
 #define countpagerefs(a, b)
 
-#define PTR2UINT(p)	((uintptr)(p))
-#define UINT2PTR(i)	((void*)(i))
-
 #define	waserror()	(up->nerrlab++, setlabel(&up->errlab[up->nerrlab-1]))
 
-#define KADDR(pa)	UINT2PTR(KZERO    | ((uintptr)(pa) & ~KSEGM))
-#define PADDR(va)	PTR2UINT(PHYSDRAM | ((uintptr)(va) & ~KSEGM))
-#define DMAADDR(va)	PTR2UINT(BUSDRAM  | ((uintptr)(va) & ~KSEGM))
-#define DMAIO(va)	PTR2UINT(BUSIO    | ((uintptr)(va) & ~VIRTIO))
+#define KADDR(pa)	((void*)(KZERO | ((uintptr)(pa) & ~KSEGM)))
+#define PADDR(va)	(PHYSDRAM | ((uintptr)(va) & ~KSEGM))
 
 #define MASK(v)	((1UL << (v)) - 1)	/* mask `v' bits wide */

@@ -149,7 +149,7 @@ vcreq(int tag, void *buf, int vallen, int rsplen)
 		memmove(prop->data, buf, vallen);
 	cachedwbinvse(prop, prop->len);
 	for(;;){
-		aprop = busaddr? dmaaddr(prop) : PTR2UINT(prop);
+		aprop = busaddr? dmaaddr(prop) : (uintptr)prop;
 		vcwrite(ChanProps, aprop);
 		r = vcread(ChanProps);
 		if(r == aprop)
@@ -211,7 +211,7 @@ fbinit(int set, int *width, int *height, int *depth)
 	vcwrite(ChanFb, dmaaddr(fi));
 	if(vcread(ChanFb) != 0)
 		return 0;
-	va = mmukmap(FRAMEBUFFER, PADDR(fi->base), fi->screensize);
+	va = mmukmap(FRAMEBUFFER, (fi->base&~0xC0000000)|PHYSDRAM, fi->screensize);
 	if(va)
 		memset((char*)va, 0x7F, fi->screensize);
 	return (void*)va;
