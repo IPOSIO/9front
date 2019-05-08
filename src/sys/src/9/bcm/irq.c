@@ -83,6 +83,7 @@ irq(Ureg* ureg)
 	Vctl *v;
 	int clockintr;
 
+	m->intr++;
 	clockintr = 0;
 	for(v = vctl[m->machno]; v != nil; v = v->next)
 		if((*v->reg & v->mask) != 0){
@@ -103,11 +104,10 @@ fiq(Ureg *ureg)
 {
 	Vctl *v;
 
-	v = vfiq;
-	if(v == nil)
-		panic("cpu%d: unexpected item in bagging area", m->machno);
 	m->intr++;
-	ureg->pc -= 4;
+	v = vfiq;
+	if(v == nil || m->machno)
+		panic("cpu%d: unexpected item in bagging area", m->machno);
 	coherence();
 	v->f(ureg, v->a);
 	coherence();
@@ -149,6 +149,7 @@ irqenable(int irq, void (*f)(Ureg*, void*), void* a)
 	if(irq == IRQfiq){
 		assert((ip->FIQctl & Fiqenable) == 0);
 		assert((*enable & v->mask) == 0);
+		assert(cpu == 0);
 		vfiq = v;
 		ip->FIQctl = Fiqenable | irq;
 	}else{
