@@ -125,16 +125,12 @@ struct MMMU
 
 struct PMMU
 {
-	Page*	mmul1;
-	Page*	mmul1tail;
-
-	Page*	mmul2;
-	Page*	mmul2tail;
-
-	Page*	mmufree;
-
+	union {
+	Page	*mmufree;	/* mmuhead[0] is freelist head */
+	Page	*mmuhead[PTLEVELS];
+	};
+	Page	*mmutail[PTLEVELS];
 	int	asid;
-
 	uintptr	tpidr;
 };
 
@@ -194,7 +190,6 @@ struct
 extern register Mach* m;			/* R27 */
 extern register Proc* up;			/* R26 */
 extern int normalprint;
-extern ulong memsize;
 
 /*
  *  a parsed plan9.ini line

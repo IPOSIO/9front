@@ -26,12 +26,10 @@ Medium *media[Maxmedia] = { 0 };
 struct Ipself
 {
 	uchar	a[IPaddrlen];
-	Ipself	*hnext;		/* next address in the hash table */
+	Ipself	*next;		/* next address in the hash table */
 	Iplink	*link;		/* binding twixt Ipself and Ipifc */
 	ulong	expire;
 	uchar	type;		/* type of address */
-	int	ref;
-	Ipself	*next;		/* free list */
 };
 
 struct Ipselftab
@@ -61,9 +59,12 @@ static char tifc[] = "ifc ";
 
 static void	addselfcache(Fs *f, Ipifc *ifc, Iplifc *lifc, uchar *a, int type);
 static void	remselfcache(Fs *f, Ipifc *ifc, Iplifc *lifc, uchar *a);
-static void	ipifcregisteraddr(Fs*, Ipifc*, uchar *, uchar *);
+static void	ipifcregisteraddr(Fs*, Ipifc*, Iplifc*, uchar*);
 static void	ipifcregisterproxy(Fs*, Ipifc*, uchar*, int);
 static char*	ipifcremlifc(Ipifc*, Iplifc**);
+
+static char Ebound[] = "interface already bound";
+static char Eunbound[] = "interface not bound";
 
 enum {
 	unknownv6,		/* UGH */
@@ -151,7 +152,7 @@ ipifcbind(Conv *c, char **argv, int argc)
 	wlock(ifc);
 	if(ifc->m != nil){
 		wunlock(ifc);
-		return "interface already bound";
+		return Ebound;
 	}
 	if(waserror()){
 		wunlock(ifc);
@@ -172,6 +173,8 @@ ipifcbind(Conv *c, char **argv, int argc)
 	ifc->m = m;
 	ifc->mintu = ifc->m->mintu;
 	ifc->maxtu = ifc->m->maxtu;
+	ifc->delay = 40;
+	ifc->speed = 0;
 	if(ifc->m->unbindonclose == 0)
 		ifc->conv->inuse++;
 
@@ -194,29 +197,28 @@ ipifcbind(Conv *c, char **argv, int argc)
 
 /*
  *  detach a device from an interface, close the interface
- *  called with ifc->conv closed
  */
 static char*
 ipifcunbind(Ipifc *ifc)
 {
-	char *err;
-
 	wlock(ifc);
-	if(waserror()){
+	if(ifc->m == nil){
 		wunlock(ifc);
-		nexterror();
+		return Eunbound;
 	}
 
 	/* disassociate logical interfaces (before zeroing ifc->arg) */
-	while(ifc->lifc != nil){
-		err = ipifcremlifc(ifc, &ifc->lifc);
-		if(err != nil)
-			error(err);
-	}
+	while(ifc->lifc != nil)
+		ipifcremlifc(ifc, &ifc->lifc);
 
 	/* disassociate device */
-	if(ifc->m != nil && ifc->m->unbind != nil)
-		(*ifc->m->unbind)(ifc);
+	if(ifc->m->unbind != nil){
+		if(!waserror()){
+			(*ifc->m->unbind)(ifc);
+			poperror();
+		}
+	}
+
 	memset(ifc->dev, 0, sizeof(ifc->dev));
 	ifc->arg = nil;
 
@@ -230,12 +232,11 @@ ipifcunbind(Ipifc *ifc)
 
 	/* dissociate routes */
 	ifc->ifcid++;
-	if(ifc->m != nil && ifc->m->unbindonclose == 0)
+	if(ifc->m->unbindonclose == 0)
 		ifc->conv->inuse--;
 	ifc->m = nil;
-
 	wunlock(ifc);
-	poperror();
+
 	return nil;
 }
 
@@ -302,6 +303,17 @@ ipifcinuse(Conv *c)
 }
 
 static void
+ipifcadjustburst(Ipifc *ifc)
+{
+	int burst;
+
+	burst = ((vlong)ifc->delay * ifc->speed) / 8000;
+	if(burst < ifc->maxtu)
+		burst = ifc->maxtu;
+	ifc->burst = burst;
+}
+
+static void
 ipifcsetdelay(Ipifc *ifc, int delay)
 {
 	if(delay < 0)
@@ -309,9 +321,7 @@ ipifcsetdelay(Ipifc *ifc, int delay)
 	else if(delay > 1000)
 		delay = 1000;
 	ifc->delay = delay;
-	ifc->burst = ((vlong)delay * ifc->speed) / 8000;
-	if(ifc->burst < ifc->maxtu)
-		ifc->burst = ifc->maxtu;
+	ipifcadjustburst(ifc);
 }
 
 static void
@@ -321,7 +331,7 @@ ipifcsetspeed(Ipifc *ifc, int speed)
 		speed = 0;
 	ifc->speed = speed;
 	ifc->load = 0;
-	ipifcsetdelay(ifc, ifc->delay);
+	ipifcadjustburst(ifc);
 }
 
 void
@@ -394,38 +404,35 @@ ipifccreate(Conv *c)
 	ifc->m = nil;
 	ifc->reflect = 0;
 	ifc->reassemble = 0;
-	ipifcsetspeed(ifc, 0);
-	ipifcsetdelay(ifc, 40);
 }
 
 /*
  *  called after last close of ipifc data or ctl
- *  called with c locked, we must unlock
  */
 static void
 ipifcclose(Conv *c)
 {
-	Ipifc *ifc;
+	Ipifc *ifc = (Ipifc*)c->ptcl;
+	Medium *m = ifc->m;
 
-	ifc = (Ipifc*)c->ptcl;
-	if(ifc->m != nil && ifc->m->unbindonclose)
+	if(m != nil && m->unbindonclose)
 		ipifcunbind(ifc);
 }
 
 /*
  *  change an interface's mtu
  */
-char*
-ipifcsetmtu(Ipifc *ifc, char **argv, int argc)
+static char*
+ipifcsetmtu(Ipifc *ifc, int mtu)
 {
-	int mtu;
+	Medium *m = ifc->m;
 
-	if(argc < 2 || ifc->m == nil)
-		return Ebadarg;
-	mtu = strtoul(argv[1], 0, 0);
-	if(mtu < ifc->m->mintu || mtu > ifc->m->maxtu)
+	if(m == nil)
+		return Eunbound;
+	if(mtu < m->mintu || mtu > m->maxtu)
 		return Ebadarg;
 	ifc->maxtu = mtu;
+	ipifcadjustburst(ifc);
 	return nil;
 }
 
@@ -489,7 +496,7 @@ ipifcadd(Ipifc *ifc, char **argv, int argc, int tentative, Iplifc *lifcp)
 	wlock(ifc);
 	if(ifc->m == nil){
 		wunlock(ifc);
-		return "ipifc not yet bound to device";
+		return Eunbound;
 	}
 	f = ifc->conv->p->f;
 	if(waserror()){
@@ -497,8 +504,8 @@ ipifcadd(Ipifc *ifc, char **argv, int argc, int tentative, Iplifc *lifcp)
 		return up->errstr;
 	}
 
-	if(mtu > 0 && mtu >= ifc->m->mintu && mtu <= ifc->m->maxtu)
-		ifc->maxtu = mtu;
+	if(mtu > 0)
+		ipifcsetmtu(ifc, mtu);
 
 	/* ignore if this is already a local address for this ifc */
 	if((lifc = iplocalonifc(ifc, ip)) != nil){
@@ -615,17 +622,16 @@ ipifcadd(Ipifc *ifc, char **argv, int argc, int tentative, Iplifc *lifcp)
 	}
 
 done:
+	ipifcregisteraddr(f, ifc, lifc, ip);
 	wunlock(ifc);
 	poperror();
-
-	ipifcregisteraddr(f, ifc, ip, ip);
 
 	return nil;
 }
 
 /*
  *  remove a logical interface from an ifc
- *  always called with ifc wlock'd
+ *	called with ifc wlock'd
  */
 static char*
 ipifcremlifc(Ipifc *ifc, Iplifc **l)
@@ -678,14 +684,13 @@ done:
 
 /*
  *  remove an address from an interface.
- *  called with c->car locked
  */
 char*
 ipifcrem(Ipifc *ifc, char **argv, int argc)
 {
-	char *rv;
 	uchar ip[IPaddrlen], mask[IPaddrlen], rem[IPaddrlen];
 	Iplifc *lifc, **l;
+	char *err;
 
 	if(argc < 3)
 		return Ebadarg;
@@ -710,9 +715,9 @@ ipifcrem(Ipifc *ifc, char **argv, int argc)
 			break;
 		l = &lifc->next;
 	}
-	rv = ipifcremlifc(ifc, l);
+	err = ipifcremlifc(ifc, l);
 	wunlock(ifc);
-	return rv;
+	return err;
 }
 
 /*
@@ -723,22 +728,12 @@ ipifcrem(Ipifc *ifc, char **argv, int argc)
 static char*
 ipifcconnect(Conv* c, char **argv, int argc)
 {
+	Ipifc *ifc = (Ipifc*)c->ptcl;
 	char *err;
-	Ipifc *ifc;
-
-	ifc = (Ipifc*)c->ptcl;
-
-	if(ifc->m == nil)
-		 return "ipifc not yet bound to device";
 
 	wlock(ifc);
-	while(ifc->lifc != nil){
-		err = ipifcremlifc(ifc, &ifc->lifc);
-		if(err != nil){
-			wunlock(ifc);
-			return err;
-		}
-	}
+	while(ifc->lifc != nil)
+		ipifcremlifc(ifc, &ifc->lifc);
 	wunlock(ifc);
 
 	err = ipifcadd(ifc, argv, argc, 0, nil);
@@ -808,14 +803,12 @@ ipifcra6(Ipifc *ifc, char **argv, int argc)
 
 /*
  *  non-standard control messages.
- *  called with c->car locked.
  */
 static char*
 ipifcctl(Conv* c, char **argv, int argc)
 {
-	Ipifc *ifc;
+	Ipifc *ifc = (Ipifc*)c->ptcl;
 
-	ifc = (Ipifc*)c->ptcl;
 	if(strcmp(argv[0], "add") == 0)
 		return ipifcadd(ifc, argv, argc, 0, nil);
 	else if(strcmp(argv[0], "try") == 0)
@@ -825,7 +818,7 @@ ipifcctl(Conv* c, char **argv, int argc)
 	else if(strcmp(argv[0], "unbind") == 0)
 		return ipifcunbind(ifc);
 	else if(strcmp(argv[0], "mtu") == 0)
-		return ipifcsetmtu(ifc, argv, argc);
+		return ipifcsetmtu(ifc, argc>1? strtoul(argv[1], 0, 0): 0);
 	else if(strcmp(argv[0], "speed") == 0){
 		ipifcsetspeed(ifc, argc>1? atoi(argv[1]): 0);
 		return nil;
@@ -892,7 +885,6 @@ ipifcinit(Fs *f)
 
 /*
  *  add to self routing cache
- *	called with c->car locked
  */
 static void
 addselfcache(Fs *f, Ipifc *ifc, Iplifc *lifc, uchar *a, int type)
@@ -1011,7 +1003,6 @@ ipselffree(Ipself *p)
 /*
  *  Decrement reference for this address on this link.
  *  Unlink from selftab if this is the last ref.
- *	called with c->car locked
  */
 static void
 remselfcache(Fs *f, Ipifc *ifc, Iplifc *lifc, uchar *a)
@@ -1107,7 +1098,6 @@ ipselftabread(Fs *f, char *cp, ulong offset, int n)
 
 	m = 0;
 	off = offset;
-	qlock(f->self);
 	for(i = 0; i < NHASH && m < n; i++){
 		for(p = f->self->hash[i]; p != nil && m < n; p = p->next){
 			nifc = 0;
@@ -1122,7 +1112,6 @@ ipselftabread(Fs *f, char *cp, ulong offset, int n)
 			}
 		}
 	}
-	qunlock(f->self);
 	return m;
 }
 
@@ -1468,7 +1457,7 @@ ipismulticast(uchar *ip)
 }
 
 /*
- *  add a multicast address to an interface, called with c->car locked
+ *  add a multicast address to an interface.
  */
 void
 ipifcaddmulti(Conv *c, uchar *ma, uchar *ia)
@@ -1487,14 +1476,14 @@ ipifcaddmulti(Conv *c, uchar *ma, uchar *ia)
 
 	f = c->p->f;
 	if((ifc = findipifc(f, ia, ma, Rmulti)) != nil){
-		wlock(ifc);
+		rlock(ifc);
 		if(waserror()){
-			wunlock(ifc);
+			runlock(ifc);
 			nexterror();
 		}
 		if((lifc = iplocalonifc(ifc, ia)) != nil)
 			addselfcache(f, ifc, lifc, ma, Rmulti);
-		wunlock(ifc);
+		runlock(ifc);
 		poperror();
 	}
 
@@ -1507,7 +1496,7 @@ ipifcaddmulti(Conv *c, uchar *ma, uchar *ia)
 
 
 /*
- *  remove a multicast address from an interface, called with c->car locked
+ *  remove a multicast address from an interface.
  */
 void
 ipifcremmulti(Conv *c, uchar *ma, uchar *ia)
@@ -1530,33 +1519,27 @@ ipifcremmulti(Conv *c, uchar *ma, uchar *ia)
 
 	f = c->p->f;
 	if((ifc = findipifc(f, ia, ma, Rmulti)) != nil){
-		wlock(ifc);
+		rlock(ifc);
 		if(!waserror()){
 			if((lifc = iplocalonifc(ifc, ia)) != nil)
 				remselfcache(f, ifc, lifc, ma);
 			poperror();
 		}
-		wunlock(ifc);
+		runlock(ifc);
 	}
 	free(multi);
 }
 
 /* register the address on this network for address resolution */
 static void
-ipifcregisteraddr(Fs *f, Ipifc *ifc, uchar *ia, uchar *ip)
+ipifcregisteraddr(Fs *f, Ipifc *ifc, Iplifc *lifc, uchar *ip)
 {
-	Iplifc *lifc;
-
-	rlock(ifc);
 	if(waserror()){
-		runlock(ifc);
-		print("ipifcregisteraddr %s %I %I: %s\n", ifc->dev, ia, ip, up->errstr);
+		print("ipifcregisteraddr %s %I %I: %s\n", ifc->dev, lifc->local, ip, up->errstr);
 		return;
 	}
-	lifc = iplocalonifc(ifc, ia);
-	if(lifc != nil && ifc->m != nil && ifc->m->areg != nil)
+	if(ifc->m != nil && ifc->m->areg != nil)
 		(*ifc->m->areg)(f, ifc, lifc, ip);
-	runlock(ifc);
 	poperror();
 }
 
@@ -1571,15 +1554,14 @@ ipifcregisterproxy(Fs *f, Ipifc *ifc, uchar *ip, int add)
 	/* register the address on any interface that will proxy for the ip */
 	for(cp = f->ipifc->conv; *cp != nil; cp++){
 		nifc = (Ipifc*)(*cp)->ptcl;
-		if(nifc == ifc)
+		if(nifc == ifc || !canrlock(nifc))
 			continue;
 
-		wlock(nifc);
 		if(nifc->m == nil
 		|| (lifc = ipremoteonifc(nifc, ip)) == nil
 		|| (lifc->type & Rptpt) != 0
 		|| waserror()){
-			wunlock(nifc);
+			runlock(nifc);
 			continue;
 		}
 		if((lifc->type & Rv4) == 0){
@@ -1590,23 +1572,22 @@ ipifcregisterproxy(Fs *f, Ipifc *ifc, uchar *ip, int add)
 			else
 				remselfcache(f, nifc, lifc, a);
 		}
-		ipmove(a, lifc->local);
-		wunlock(nifc);
-		poperror();
-
 		if(add)
-			ipifcregisteraddr(f, nifc, a, ip);
+			ipifcregisteraddr(f, nifc, lifc, ip);
+		runlock(nifc);
+		poperror();
 	}
 }
 
 char*
-ipifcadd6(Ipifc *ifc, char**argv, int argc)
+ipifcadd6(Ipifc *ifc, char **argv, int argc)
 {
 	int plen = 64;
 	char addr[40], preflen[6];
 	char *params[3];
 	uchar prefix[IPaddrlen];
 	Iplifc lifc;
+	Medium *m;
 
 	lifc.onlink = 1;
 	lifc.autoflag = 1;
@@ -1640,9 +1621,10 @@ ipifcadd6(Ipifc *ifc, char**argv, int argc)
 		return Ebadarg;
 
 	/* issue "add" ctl msg for v6 link-local addr and prefix len */
-	if(ifc->m->pref2addr == nil)
-		return Ebadarg;
-	(*ifc->m->pref2addr)(prefix, ifc->mac);	/* mac → v6 link-local addr */
+	m = ifc->m;
+	if(m == nil || m->pref2addr == nil)
+		return Eunbound;
+	(*m->pref2addr)(prefix, ifc->mac);	/* mac → v6 link-local addr */
 
 	sprint(addr, "%I", prefix);
 	sprint(preflen, "/%d", plen);

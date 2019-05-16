@@ -210,7 +210,6 @@ struct Conv
 	Queue*	sq;			/* snooping queue */
 	Ref	snoopers;		/* number of processes with snoop open */
 
-	QLock	car;
 	Rendez	cr;
 	char	cerr[ERRMAX];
 
@@ -275,9 +274,9 @@ struct Iplink
 	Ipself	*self;
 	Iplifc	*lifc;
 	Iplink	*selflink;	/* next link for this local address */
-	Iplink	*lifclink;	/* next link for this ifc */
-	ulong	expire;
+	Iplink	*lifclink;	/* next link for this lifc */
 	Iplink	*next;		/* free list */
+	ulong	expire;
 	int	ref;
 };
 
