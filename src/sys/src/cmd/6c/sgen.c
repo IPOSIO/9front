@@ -162,6 +162,8 @@ xcom(Node *n)
 			l->scale = idx.scale;
 			l->addable = 9;
 			l->complex = l->right->complex;
+			if(l->complex == 0)
+				l->complex++;
 			l->type = l->left->type;
 			n->op = OADDR;
 			n->left = l;
@@ -324,7 +326,7 @@ brk:
 		break;
 
 	case OCAST:
-		if(l->type->etype == TUVLONG && typefd[n->type->etype])
+		if(l != Z && l->type->etype == TUVLONG && typefd[n->type->etype])
 			n->complex += 2;
 		break;
 
